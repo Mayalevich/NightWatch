@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Sleep Monitor — Analytics Report</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fontsource/inter/400.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fontsource/inter/600.css">
+  <style>
+    :root { color-scheme: light dark; }
+    body { margin:0; font-family: 'Inter', system-ui, -apple-system, sans-serif; background:#f1f5f9; color:#0f172a; }
+    header { background:#111827; color:#fff; padding:20px 28px; display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:16px; }
+    header h1 { margin:0; font-size:24px; }
+    nav a { color:#cbd5f5; margin-right:18px; text-decoration:none; font-weight:500; }
+    nav a:hover { color:#fff; }
+    .main { padding:24px; max-width:1200px; margin:0 auto; }
+    .card { background:#fff; border-radius:18px; padding:20px 24px; box-shadow:0 18px 40px -24px rgba(15,23,42,0.5); margin-bottom:24px; }
+    .summary-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:16px; margin-top:16px; }
+    .metric { display:flex; flex-direction:column; gap:4px; }
+    .metric-title { font-size:14px; color:#64748b; text-transform:uppercase; letter-spacing:0.05em; }
+    .metric-value { font-size:32px; font-weight:600; }
+    .metric-sub { font-size:14px; color:#475569; }
+    #plots { display:grid; grid-template-columns:1fr; gap:24px; }
+    .chip-row { display:flex; flex-wrap:wrap; gap:12px; margin-top:12px; }
+    .chip { background:#e2e8f0; color:#1e293b; padding:6px 12px; border-radius:999px; font-weight:500; }
+    footer { padding:24px; text-align:center; color:#64748b; font-size:14px; }
+    a.button { background:#4f46e5; color:#fff; padding:10px 16px; border-radius:999px; text-decoration:none; font-weight:600; }
+    a.button.secondary { background:transparent; border:1px solid rgba(255,255,255,0.3); color:#e2e8f0; }
+    @media (max-width: 720px) {
+      header { flex-direction:column; align-items:flex-start; }
+      nav a { margin-right:12px; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>Sleep Monitor — Analytics Report</h1>
+      <div style="color:#94a3b8;">Deep-dive insights generated from stored sessions</div>
+    </div>
+    <nav>
+      <a href="/" class="button">Live Dashboard</a>
+      <a href="/reports" class="button secondary">Refresh Report</a>
+    </nav>
+  </header>
+
+  <main class="main">
+    <section class="card">
+      <h2 style="margin:0; font-size:20px;">Quick Summary</h2>
+      <div style="margin-top:4px; color:#475569;">Covering the last {{ window_minutes }} minutes of recorded data.</div>
+      <div class="summary-grid">
+        <div class="metric">
+          <span class="metric-title">Average Sleep Score</span>
+          <span class="metric-value">{{ avg_score }}</span>
+          <span class="metric-sub">{{ score_hint }}</span>
+        </div>
+        <div class="metric">
+          <span class="metric-title">Movement Events (per min)</span>
+          <span class="metric-value">{{ events_total }}</span>
+          <span class="metric-sub">Head {{ events_head }} · Body {{ events_body }} · Leg {{ events_leg }}</span>
+        </div>
+        <div class="metric">
+          <span class="metric-title">Environment</span>
+          <span class="metric-value">{{ temp_avg }} °C</span>
+          <span class="metric-sub">Light {{ light_avg }} · Sound RMS {{ sound_avg }}</span>
+        </div>
+        <div class="metric">
+          <span class="metric-title">Dataset Size</span>
+          <span class="metric-value">{{ sample_count }}</span>
+          <span class="metric-sub">records analysed</span>
+        </div>
+      </div>
+      <div class="chip-row">
+        {% for note in notes %}
+          <span class="chip">{{ note }}</span>
+        {% endfor %}
+      </div>
+    </section>
+
+    <section class="card">
+      <h2 style="margin:0 0 12px 0; font-size:20px;">Movement & Environment Trends</h2>
+      {{ plot_movement | safe }}
+    </section>
+
+    <section class="card">
+      <h2 style="margin:0 0 12px 0; font-size:20px;">Sleep Score Heatmap</h2>
+      {{ plot_heatmap | safe }}
+    </section>
+  </main>
+
+  <footer>
+    Generated {{ generated_at }} · Sleep Monitor Suite
+  </footer>
+</body>
+</html>

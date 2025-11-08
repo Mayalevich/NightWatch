@@ -1,0 +1,610 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Sleep Monitor — Live Dashboard</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 0; padding: 16px; background: linear-gradient(180deg,#f8fafc 0%,#e0e7ff 100%); min-height: 100vh; }
+  header { display:flex; gap:12px; align-items:center; justify-content:space-between; flex-wrap:wrap; }
+  header .brand { display:flex; flex-direction:column; gap:4px; }
+  .nav-link { padding:10px 16px; border-radius:999px; background:#312e81; color:#e0e7ff; text-decoration:none; font-weight:600; }
+  .nav-link:hover { background:#4338ca; color:#fff; }
+  .btn { padding:10px 14px; border:0; border-radius:10px; background:#4f46e5; color:#fff; cursor:pointer; }
+  .btn.secondary { background:#64748b; }
+  .btn.ghost { background:#e2e8f0; color:#111827; }
+  .btn:disabled { opacity:.5; cursor:not-allowed; }
+  .tabs { display:flex; gap:8px; margin-top:20px; flex-wrap:wrap; }
+  .tab-btn { padding:10px 16px; border-radius:999px; border:1px solid transparent; background:#e2e8f0; color:#111827; cursor:pointer; font-weight:600; }
+  .tab-btn.active { background:#4f46e5; color:#fff; }
+  .section-panel { display:none; margin-top:20px; }
+  .section-panel.active { display:block; }
+  .statgrid { display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:12px; }
+  .card { background: rgb(255 255 255 / .7); border-radius:14px; padding:12px; box-shadow:0 2px 14px rgb(0 0 0 / .06); backdrop-filter: blur(4px); }
+  .card.primary { padding:18px; }
+  .k { color:#6b7280; font-size:12px; }
+  .v { font-size:22px; font-weight:600; margin-top:4px; }
+  .big { font-size:34px; font-weight:700; }
+  .badge { display:inline-block; font-size:12px; padding:2px 8px; border-radius:999px; margin-top:6px; }
+  .ok { background:#dcfce7; color:#166534; }
+  .bad { background:#fee2e2; color:#991b1b; }
+  .warn{ background:#fef3c7; color:#92400e; }
+  .muted{ color:#6b7280; }
+  .flex-row { display:flex; gap:12px; flex-wrap:wrap; }
+  .overview-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:16px; }
+  canvas { width:100%; height:280px; }
+  .row { display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-top:12px; }
+  @media (max-width: 900px) { .row { grid-template-columns:1fr; } }
+  #log { font:12px/1.35 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; height:140px; overflow-y:auto; white-space:pre-wrap; background: #0b1020; color:#cbd5e1; border-radius:10px; padding:10px; }
+  .content-shell { max-width: 1200px; margin: 0 auto; margin-top: 12px; display:flex; flex-direction:column; gap:16px; }
+</style>
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <h1 style="margin:0 0 6px 0;">Sleep Monitor — Live Dashboard</h1>
+      <div class="muted" id="hint">Connect to your Arduino (115200 baud). CSV header must match the 18-column format.</div>
+    </div>
+    <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+      <a class="nav-link" href="/reports" target="_blank" rel="noopener">Analytics Report</a>
+      <button class="btn" id="connectBtn">Connect</button>
+      <button class="btn ghost" id="clearBtn">Clear Data</button>
+      <button class="btn secondary" id="startLogBtn" disabled>Start Logging</button>
+      <button class="btn ghost" id="stopLogBtn" disabled>Stop Logging</button>
+      <button class="btn ghost" id="downloadBtn" disabled>Download CSV</button>
+      <button class="btn ghost" id="streamFileBtn" disabled title="Save as data arrives (Chrome/Edge)">Stream to File</button>
+      <span id="status" class="muted">Disconnected</span>
+    </div>
+  </header>
+
+  <main class="content-shell">
+    <nav class="tabs">
+      <button class="tab-btn active" id="tabOverview">Overview</button>
+      <button class="tab-btn" id="tabDetail">Detailed Dashboard</button>
+    </nav>
+
+    <section class="section-panel active" id="overviewPanel">
+      <div class="overview-grid">
+        <div class="card primary">
+          <div class="k">Sleep Score</div>
+          <div class="big" id="overviewScore">–</div>
+          <div class="muted" id="overviewScoreHint">Awaiting data…</div>
+        </div>
+        <div class="card primary">
+          <div class="k">Restfulness</div>
+          <div class="big" id="overviewRest">–</div>
+          <span class="badge ok" id="overviewRestBadge">Idle</span>
+          <div class="muted" id="overviewRestHint">Movement status by body region</div>
+        </div>
+        <div class="card primary">
+          <div class="k">Current Movement</div>
+          <div class="v" id="overviewMovement">Head –, Body –, Leg –</div>
+          <div class="muted">Updates whenever body regions move</div>
+        </div>
+        <div class="card primary">
+          <div class="k">Environment</div>
+          <div class="v" id="overviewEnvironmentTemp">Temp: – °C</div>
+          <div class="v" id="overviewEnvironmentLight">Light: –</div>
+          <div class="v" id="overviewEnvironmentSound">Sound RMS: –</div>
+        </div>
+      </div>
+      <div class="flex-row" style="margin-top:16px;">
+        <div class="card" style="flex:1; min-width:240px;">
+          <div class="k">Monitoring State</div>
+          <div class="v" id="overviewMonitoring">–</div>
+          <div class="muted" id="overviewMonitoringHint">Short press button to pause/resume; long press recalibrates.</div>
+        </div>
+        <div class="card" style="flex:1; min-width:240px;">
+          <div class="k">Session Uptime</div>
+          <div class="v" id="overviewTime">0.0 s</div>
+          <div class="muted">Auto resets if Arduino is restarted</div>
+        </div>
+        <div class="card" style="flex:1; min-width:240px;">
+          <div class="k">Events this Minute</div>
+          <div class="v" id="overviewEvents">Head 0 · Body 0 · Leg 0</div>
+          <div class="muted">Helps spot restless periods quickly</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section-panel" id="detailPanel">
+  <section class="statgrid">
+    <div class="card"><div class="k">Uptime</div><div class="v" id="timeVal">0.0 s</div></div>
+    <div class="card"><div class="k">SleepScore</div><div class="v" id="scoreVal">100</div></div>
+    <div class="card"><div class="k">Head RMS</div><div class="v" id="rmsH">0.0</div><span id="movH" class="badge ok">Idle</span></div>
+    <div class="card"><div class="k">Body RMS</div><div class="v" id="rmsB">0.0</div><span id="movB" class="badge ok">Idle</span></div>
+    <div class="card"><div class="k">Leg RMS</div><div class="v" id="rmsL">0.0</div><span id="movL" class="badge ok">Idle</span></div>
+    <div class="card"><div class="k">Events (sec)</div><div class="v" id="evSec">H0 / B0 / L0</div></div>
+    <div class="card"><div class="k">Events (minute)</div><div class="v" id="evMin">H0 / B0 / L0</div></div>
+    <div class="card"><div class="k">Total/min</div><div class="v" id="evTotal">0</div></div>
+  </section>
+
+  <section class="row">
+    <div class="card">
+      <div class="k" style="display:flex; justify-content:space-between;">
+        <span>RMS (Head/Body/Leg) — last 5 min</span>
+        <span id="pointsA" class="muted"></span>
+      </div>
+      <canvas id="rmsChart"></canvas>
+    </div>
+    <div class="card">
+      <div class="k" style="display:flex; justify-content:space-between;">
+        <span>Vitals (Temp °C / Light raw / Sound RMS) — last 5 min</span>
+        <span id="pointsB" class="muted"></span>
+      </div>
+      <canvas id="auxChart"></canvas>
+    </div>
+  </section>
+
+  <section class="card" style="margin-top:12px;">
+    <div style="display:flex; justify-content:space-between; align-items:center;">
+      <div class="k">Event Log</div>
+      <button class="btn ghost" id="clearLog">Clear</button>
+    </div>
+    <div id="log"></div>
+  </section>
+    </section>
+  </main>
+
+<script>
+(() => {
+  const statusEl = document.getElementById('status');
+  const hintEl = document.getElementById('hint');
+  const connectBtn = document.getElementById('connectBtn');
+  const clearBtn = document.getElementById('clearBtn');
+  const startLogBtn = document.getElementById('startLogBtn');
+  const stopLogBtn  = document.getElementById('stopLogBtn');
+  const downloadBtn = document.getElementById('downloadBtn');
+  const streamFileBtn = document.getElementById('streamFileBtn');
+  const logEl = document.getElementById('log');
+  const timeVal = document.getElementById('timeVal');
+  const scoreVal = document.getElementById('scoreVal');
+  const rmsH = document.getElementById('rmsH');
+  const rmsB = document.getElementById('rmsB');
+  const rmsL = document.getElementById('rmsL');
+  const movH = document.getElementById('movH');
+  const movB = document.getElementById('movB');
+  const movL = document.getElementById('movL');
+  const evSec = document.getElementById('evSec');
+  const evMin = document.getElementById('evMin');
+  const evTotal = document.getElementById('evTotal');
+  const pointsA = document.getElementById('pointsA');
+  const pointsB = document.getElementById('pointsB');
+
+  const tabOverview = document.getElementById('tabOverview');
+  const tabDetail = document.getElementById('tabDetail');
+  const overviewPanel = document.getElementById('overviewPanel');
+  const detailPanel = document.getElementById('detailPanel');
+
+  const overviewScore = document.getElementById('overviewScore');
+  const overviewScoreHint = document.getElementById('overviewScoreHint');
+  const overviewRest = document.getElementById('overviewRest');
+  const overviewRestBadge = document.getElementById('overviewRestBadge');
+  const overviewRestHint = document.getElementById('overviewRestHint');
+  const overviewMovement = document.getElementById('overviewMovement');
+  const overviewEnvironmentTemp = document.getElementById('overviewEnvironmentTemp');
+  const overviewEnvironmentLight = document.getElementById('overviewEnvironmentLight');
+  const overviewEnvironmentSound = document.getElementById('overviewEnvironmentSound');
+  const overviewMonitoring = document.getElementById('overviewMonitoring');
+  const overviewMonitoringHint = document.getElementById('overviewMonitoringHint');
+  const overviewTime = document.getElementById('overviewTime');
+  const overviewEvents = document.getElementById('overviewEvents');
+
+  function log(msg) {
+    const ts = new Date().toLocaleTimeString();
+    logEl.textContent += `[${ts}] ${msg}\n`;
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+
+  const activityLabels = ['Idle', 'Slight', 'Attention'];
+  const activityClasses = ['badge ok', 'badge warn', 'badge bad'];
+
+  function setBadge(el, activityLevel) {
+    const level = Math.max(0, Math.min(2, Number(activityLevel) || 0));
+    el.textContent = activityLabels[level];
+    el.className = activityClasses[level];
+  }
+
+  const maxPoints = 300;
+  const rmsChart = new Chart(document.getElementById('rmsChart'), {
+    type: 'line',
+    data: {
+      labels: [],
+      datasets: [
+        { label: 'Head', data: [], borderWidth: 2, tension: .2 },
+        { label: 'Body', data: [], borderWidth: 2, tension: .2 },
+        { label: 'Leg',  data: [], borderWidth: 2, tension: .2 },
+      ]
+    },
+    options: { animation: false, responsive: true, scales: { x: { display: false }, y: { beginAtZero: true } } }
+  });
+
+  const auxChart = new Chart(document.getElementById('auxChart'), {
+    type: 'line',
+    data: {
+      labels: [],
+      datasets: [
+        { label: 'Temp (°C)', data: [], borderWidth: 2, tension: .2 },
+        { label: 'Light raw', data: [], borderWidth: 2, tension: .2 },
+        { label: 'Sound RMS', data: [], borderWidth: 2, tension: .2 },
+      ]
+    },
+    options: { animation: false, responsive: true, scales: { x: { display: false }, y: { beginAtZero: true } } }
+  });
+
+  function pushPoint(chart, arr) {
+    chart.data.labels.push('');
+    chart.data.datasets.forEach((ds, i) => ds.data.push(Number(arr[i]) || 0));
+    if (chart.data.labels.length > maxPoints) {
+      chart.data.labels.shift();
+      chart.data.datasets.forEach(ds => ds.data.shift());
+    }
+    chart.update();
+  }
+
+  function resetCharts() {
+    rmsChart.data.labels = [];
+    rmsChart.data.datasets.forEach(ds => ds.data = []);
+    rmsChart.update();
+    auxChart.data.labels = [];
+    auxChart.data.datasets.forEach(ds => ds.data = []);
+    auxChart.update();
+    pointsA.textContent = '0 pts';
+    pointsB.textContent = '0 pts';
+  }
+
+  function resetDetailDisplays() {
+    timeVal.textContent = '0.0 s';
+    scoreVal.textContent = '100';
+    rmsH.textContent = '0.0';
+    rmsB.textContent = '0.0';
+    rmsL.textContent = '0.0';
+    setBadge(movH, 0);
+    setBadge(movB, 0);
+    setBadge(movL, 0);
+    evSec.textContent = 'H0 / B0 / L0';
+    evMin.textContent = 'H0 / B0 / L0';
+    evTotal.textContent = '0';
+  }
+
+  function resetOverviewDisplays() {
+    overviewScore.textContent = '–';
+    overviewScoreHint.textContent = 'Awaiting data…';
+    overviewRest.textContent = 'Calm';
+    overviewRestBadge.textContent = 'Calm';
+    overviewRestBadge.className = 'badge ok';
+    overviewRestHint.textContent = 'No data yet.';
+    overviewMovement.textContent = 'Head – · Body – · Leg –';
+    overviewEnvironmentTemp.textContent = 'Temp: – °C';
+    overviewEnvironmentLight.textContent = 'Light: –';
+    overviewEnvironmentSound.textContent = 'Sound RMS: –';
+    overviewMonitoring.textContent = 'Monitoring Active';
+    overviewMonitoringHint.textContent = 'Short press device button to pause if needed.';
+    overviewTime.textContent = '0.0 s';
+    overviewEvents.textContent = 'Head 0 · Body 0 · Leg 0';
+  }
+
+  function clearLocalData() {
+    resetCharts();
+    resetDetailDisplays();
+    resetOverviewDisplays();
+    if (logging) {
+      logLines.push(headerCSV);
+    } else {
+      logLines = [];
+    }
+    log('Dashboard cleared. Awaiting new data.');
+  }
+
+  let socket = null;
+  let logging = false;
+  let logLines = [];
+  const headerCSV = "time_s,RMS_H,RMS_B,RMS_L,MOV_H,MOV_B,MOV_L,secEv_H,secEv_B,secEv_L,minute_events_H,minute_events_B,minute_events_L,total_events_min,SleepScore,SoundRMS,LightRaw,TempC";
+  let writer = null;
+  let fileStream = null;
+  let fileHandle = null;
+
+  const fieldOrder = headerCSV.split(',');
+  let activePanel = 'overview';
+
+  function showPanel(panel) {
+    activePanel = panel;
+    const isOverview = panel === 'overview';
+    overviewPanel.classList.toggle('active', isOverview);
+    detailPanel.classList.toggle('active', !isOverview);
+    tabOverview.classList.toggle('active', isOverview);
+    tabDetail.classList.toggle('active', !isOverview);
+  }
+
+  tabOverview.onclick = () => showPanel('overview');
+  tabDetail.onclick = () => showPanel('detail');
+
+  function payloadToCsv(payload) {
+    return fieldOrder.map(key => payload[key]).join(',');
+  }
+
+  function describeScore(score) {
+    if (score >= 85) return 'Excellent rest';
+    if (score >= 70) return 'Generally restful';
+    if (score >= 50) return 'Watch for disturbances';
+    return 'High movement detected';
+  }
+
+  function updateOverview(payload) {
+     const score = Number(payload.SleepScore) || 0;
+     overviewScore.textContent = score.toFixed(0);
+     overviewScoreHint.textContent = describeScore(score);
+ 
+    const headLevel = Number(payload.activity_H) || 0;
+    const bodyLevel = Number(payload.activity_B) || 0;
+    const legLevel = Number(payload.activity_L) || 0;
+    const overallLevel = Number(payload.status_level) || Math.max(headLevel, bodyLevel, legLevel);
+    const overallLabel = payload.status_label || activityLabels[overallLevel] || 'Idle';
+    
+    overviewRest.textContent = overallLabel;
+    overviewRestBadge.textContent = overallLabel;
+    overviewRestBadge.className = activityClasses[overallLevel] || 'badge ok';
+    
+    const hints = [
+      'Body appears calm.',
+      'Minor movement detected — continue to observe.',
+      'Significant movement detected — check patient.',
+    ];
+    overviewRestHint.textContent = hints[overallLevel] || hints[0];
+
+    overviewMovement.textContent = `Head ${activityLabels[headLevel]} · Body ${activityLabels[bodyLevel]} · Leg ${activityLabels[legLevel]}`;
+ 
+    const temp = Number(payload.TempC);
+    const light = Number(payload.LightRaw);
+    const sound = Number(payload.SoundRMS);
+    overviewEnvironmentTemp.textContent = `Temp: ${isNaN(temp) ? '–' : temp.toFixed(1)} °C`;
+    overviewEnvironmentLight.textContent = `Light: ${isNaN(light) ? '–' : light.toFixed(0)}`;
+    overviewEnvironmentSound.textContent = `Sound RMS: ${isNaN(sound) ? '–' : sound.toFixed(1)}`;
+
+    const monitoring = Number(payload.monitoring) === 1 || payload.monitoring === true;
+    overviewMonitoring.textContent = monitoring ? 'Monitoring Active' : 'Monitoring Paused';
+    overviewMonitoringHint.textContent = monitoring ? 'Short press device button to pause if needed.' : 'Short press device button to resume monitoring.';
+
+    const time = Number(payload.time_s);
+    overviewTime.textContent = isNaN(time) ? '0.0 s' : `${time.toFixed(1)} s`;
+
+    overviewEvents.textContent = `Head ${payload.minute_events_H} · Body ${payload.minute_events_B} · Leg ${payload.minute_events_L}`;
+  }
+
+  function setConnectedState(connected) {
+    if (connected) {
+      connectBtn.textContent = 'Disconnect';
+      connectBtn.classList.add('secondary');
+      startLogBtn.disabled = false;
+      streamFileBtn.disabled = false;
+      statusEl.textContent = 'Connected';
+    } else {
+      connectBtn.textContent = 'Connect';
+      connectBtn.classList.remove('secondary');
+      startLogBtn.disabled = true;
+      stopLogBtn.disabled = true;
+      streamFileBtn.disabled = true;
+      downloadBtn.disabled = !logLines.length;
+      statusEl.textContent = 'Disconnected';
+    }
+  }
+
+  async function startStreamingFile() {
+    try {
+      fileHandle = await window.showSaveFilePicker({
+        suggestedName: `sleep_data_${new Date().toISOString().replace(/[:.]/g, '-')}.csv`,
+        types: [{ description: 'CSV', accept: { 'text/csv': ['.csv'] } }]
+      });
+      fileStream = await fileHandle.createWritable();
+      writer = fileStream.getWriter();
+      await writer.write(headerCSV + "\n");
+      streamFileBtn.textContent = 'Streaming…';
+      streamFileBtn.disabled = false;
+      log('Streaming to file started.');
+    } catch (e) {
+      log('Stream file canceled / unavailable: ' + e.message);
+      writer = null;
+      fileStream = null;
+      fileHandle = null;
+    }
+  }
+
+  async function stopStreamingFile() {
+    try {
+      if (writer) await writer.close();
+      if (fileStream) await fileStream.close();
+      log('Streaming to file stopped.');
+    } catch (e) {
+      log('Error closing stream: ' + e.message);
+    }
+    writer = null;
+    fileStream = null;
+    fileHandle = null;
+    streamFileBtn.textContent = 'Stream to File';
+  }
+
+  function buildWsUrl() {
+    if (window.location.protocol.startsWith('http')) {
+      const isSecure = window.location.protocol === 'https:';
+      const proto = isSecure ? 'wss' : 'ws';
+      const host = window.location.hostname || 'localhost';
+      const port = window.location.port || (isSecure ? '443' : '8000');
+      return `${proto}://${host}:${port}/stream`;
+    }
+    return 'ws://localhost:8000/stream';
+  }
+
+  function handleData(payload, options = {}) {
+    const { isHistory = false } = options;
+
+    timeVal.textContent = Number(payload.time_s).toFixed(1) + ' s';
+    scoreVal.textContent = Number(payload.SleepScore).toFixed(0);
+    rmsH.textContent = Number(payload.RMS_H).toFixed(1);
+    rmsB.textContent = Number(payload.RMS_B).toFixed(1);
+    rmsL.textContent = Number(payload.RMS_L).toFixed(1);
+    setBadge(movH, payload.activity_H);
+    setBadge(movB, payload.activity_B);
+    setBadge(movL, payload.activity_L);
+    const secH = Number(payload.secEv_H) || 0;
+    const secB = Number(payload.secEv_B) || 0;
+    const secL = Number(payload.secEv_L) || 0;
+    const minH = Number(payload.minute_events_H) || 0;
+    const minB = Number(payload.minute_events_B) || 0;
+    const minL = Number(payload.minute_events_L) || 0;
+    evSec.textContent = `H${secH} / B${secB} / L${secL}`;
+    evMin.textContent = `H${minH} / B${minB} / L${minL}`;
+    evTotal.textContent = `${Number(payload.total_events_min) || 0}`;
+
+    pushPoint(rmsChart, [payload.RMS_H, payload.RMS_B, payload.RMS_L]);
+    pushPoint(auxChart, [payload.TempC, payload.LightRaw, payload.SoundRMS]);
+
+    pointsA.textContent = `${rmsChart.data.labels.length} pts`;
+    pointsB.textContent = `${auxChart.data.labels.length} pts`;
+
+    if (logging && !isHistory) {
+      if (!logLines.length) {
+        logLines.push(headerCSV);
+      }
+      const csvRow = payloadToCsv(payload);
+      logLines.push(csvRow);
+      if (writer) {
+        writer.write(csvRow + '\n').catch(e => log('Stream write error: ' + e.message));
+      }
+    }
+  }
+
+  async function loadHistory() {
+    try {
+      const res = await fetch(`/api/history?limit=${maxPoints}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const rows = await res.json();
+      if (!Array.isArray(rows) || !rows.length) {
+        statusEl.textContent = 'No stored history yet. Connect to start streaming.';
+        return;
+      }
+      rows.forEach((payload, idx) => {
+        handleData(payload, { isHistory: true });
+        if (idx === rows.length - 1) updateOverview(payload);
+      });
+      statusEl.textContent = 'History loaded. Connect to stream live data.';
+    } catch (e) {
+      log('History load error: ' + e.message);
+    }
+  }
+
+  loadHistory();
+
+  connectBtn.onclick = () => {
+    if (socket && socket.readyState === WebSocket.OPEN) {
+      socket.close();
+      return;
+    }
+    const url = buildWsUrl();
+    log('Connecting to ' + url);
+    statusEl.textContent = 'Connecting…';
+    socket = new WebSocket(url);
+
+    socket.onopen = () => {
+      log('Connected.');
+      setConnectedState(true);
+      hintEl.textContent = 'Backend connected. Raw sensor processing is server-side now.';
+    };
+
+    socket.onmessage = (event) => {
+      try {
+        const msg = JSON.parse(event.data);
+        if (msg.type === 'status') {
+          log(`Status: ${msg.message}`);
+          statusEl.textContent = msg.message;
+        } else if (msg.type === 'data') {
+          updateOverview(msg.payload);
+          handleData(msg.payload);
+        }
+      } catch (err) {
+        log('Message parse error: ' + err.message);
+      }
+    };
+
+    socket.onclose = () => {
+      log('Disconnected.');
+      if (logging) {
+        logging = false;
+        startLogBtn.disabled = false;
+        stopLogBtn.disabled = true;
+      }
+      if (writer) {
+        stopStreamingFile();
+      }
+      setConnectedState(false);
+      socket = null;
+    };
+
+    socket.onerror = (err) => {
+      log('WebSocket error: ' + err.message);
+    };
+  };
+
+  clearBtn.onclick = async () => {
+    const original = clearBtn.textContent;
+    clearBtn.disabled = true;
+    clearBtn.textContent = 'Clearing…';
+    try {
+      const res = await fetch('/api/reset', { method: 'POST' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      clearLocalData();
+      statusEl.textContent = 'Reset. Waiting for calibration…';
+    } catch (e) {
+      log('Reset failed: ' + e.message);
+    } finally {
+      clearBtn.disabled = false;
+      clearBtn.textContent = original;
+    }
+  };
+
+  startLogBtn.onclick = () => {
+    logging = true;
+    if (!logLines.length) {
+      logLines.push(headerCSV);
+    }
+    startLogBtn.disabled = true;
+    stopLogBtn.disabled = false;
+    downloadBtn.disabled = false;
+    log('Logging started.');
+  };
+
+  stopLogBtn.onclick = () => {
+    logging = false;
+    startLogBtn.disabled = false;
+    stopLogBtn.disabled = true;
+    downloadBtn.disabled = !logLines.length;
+    log('Logging stopped.');
+  };
+
+  downloadBtn.onclick = () => {
+    if (!logLines.length) return;
+    const blob = new Blob([logLines.join('\n') + '\n'], { type: 'text/csv' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `sleep_data_${new Date().toISOString().replace(/[:.]/g, '-')}.csv`;
+    a.click();
+  };
+
+  streamFileBtn.onclick = async () => {
+    if (!writer) await startStreamingFile();
+    else await stopStreamingFile();
+  };
+
+  document.getElementById('clearLog').onclick = () => {
+    logEl.textContent = '';
+  };
+
+  resetOverviewDisplays();
+  resetDetailDisplays();
+  resetCharts();
+
+})();
+</script>
+</body>
+</html>
