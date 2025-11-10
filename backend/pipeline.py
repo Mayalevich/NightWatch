@@ -92,15 +92,15 @@ class SleepPipeline:
   def __init__(self):
     # Adjusted thresholds based on observed data: head p95=1.06, body p95=5.61, leg p95=5.03
     self.config = {
-      "head": ChannelConfig(0.25, 1.20, 1.5),   # lowered from 20.0
-      "body": ChannelConfig(1.00, 0.90, 6.0),   # lowered from 14.0
-      "leg": ChannelConfig(1.00, 1.00, 5.5),    # lowered from 8.0
+      "head": ChannelConfig(0.25, 1.00, 2.0),   # more conservative
+      "body": ChannelConfig(0.70, 1.00, 8.0),   # reduced norm_gain to suppress constant ~1.0 baseline
+      "leg": ChannelConfig(1.00, 1.00, 6.0),    # increased slightly
     }
     self.gain_vib = 6.0
-    self.vib_margin_add = 18.0
-    self.noise_alpha = 0.02
-    self.hyst_add = 3.0
-    self.spike_factor = 4.0
+    self.vib_margin_add = 10.0  # reduced margin for tighter thresholds
+    self.noise_alpha = 0.05  # faster EMA adaptation
+    self.hyst_add = 2.0  # tighter hysteresis
+    self.spike_factor = 3.0  # less aggressive spike suppression
     self.rms_window_ms = 250
     self.second_window_ms = 1000
     self.minute_window_ms = 60000
@@ -248,7 +248,7 @@ class SleepPipeline:
       state.acc2 = 0.0
       state.count = 0
       state.rms = 0.0
-      state.rms_filtered = idle_rms * state.config.norm_gain
+      state.rms_filtered = 0.0  # Start from zero to avoid decay artifacts
       state.events_sec = 0
       state.events_min = 0
       state.activity_level = 0
@@ -343,10 +343,14 @@ class SleepPipeline:
       elif falling:
         state.moving = False
 
-      # Classify activity level based on absolute RMS value
-      if value >= 1.0:
+      # Classify activity level based on ratio to adaptive baseline
+      # Use noise_ema (adaptive idle level) as reference instead of absolute values
+      baseline_ref = max(state.noise_ema, 0.1)
+      ratio = value / baseline_ref
+      
+      if ratio >= 2.5:  # 2.5x above baseline
         state.activity_level = 2  # Needs attention
-      elif value >= 0.5:
+      elif ratio >= 1.5:  # 1.5x above baseline
         state.activity_level = 1  # Slight movement
       else:
         state.activity_level = 0  # Idle
@@ -377,9 +381,35 @@ class SleepPipeline:
     events_min = {name: state.events_min for name, state in self.channels.items()}
 
     total_min = sum(events_min.values())
-    sleep_score = 100.0 - 5.0 * total_min
-    if sleep_score < 0:
-      sleep_score = 0.0
+    
+    # Realistic sleep score based on multiple factors
+    score = 100.0
+    
+    # Factor 1: Movement events (discrete threshold crossings)
+    # Penalize 3 points per event in current minute
+    score -= total_min * 3.0
+    
+    # Factor 2: Overall movement intensity (RMS levels)
+    # Sum current RMS values weighted by region importance
+    current_rms = self.channels["head"].rms * 2.0  # head movement more significant
+    current_rms += self.channels["body"].rms * 1.5
+    current_rms += self.channels["leg"].rms * 1.0
+    # Penalize if total weighted RMS > 2.0 (indicates restlessness even without events)
+    if current_rms > 2.0:
+      score -= (current_rms - 2.0) * 5.0
+    
+    # Factor 3: Activity level penalties
+    for name, state in self.channels.items():
+      if state.activity_level == 2:  # Needs attention
+        score -= 8.0
+      elif state.activity_level == 1:  # Slight movement
+        score -= 3.0
+    
+    # Factor 4: Environmental disturbances
+    if sound_rms > 150:  # noisy environment
+      score -= (sound_rms - 150) * 0.05
+    
+    sleep_score = max(0.0, min(100.0, score))
 
     for state in self.channels.values():
       state.events_sec = 0
