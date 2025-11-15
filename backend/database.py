@@ -285,3 +285,44 @@ def get_recent_interactions(limit: int = 200) -> List[dict]:
     )
     rows = list(reversed(query.all()))
     return [row.to_payload() for row in rows]
+
+
+def get_system_stats() -> dict:
+  with contextlib.closing(SessionLocal()) as session:
+    sample_count = session.query(ProcessedSampleModel).count()
+    last_sample = (
+      session.query(ProcessedSampleModel.recorded_at)
+      .order_by(ProcessedSampleModel.recorded_at.desc())
+      .first()
+    )
+    assessment_count = session.query(CognitiveAssessmentModel).count()
+    last_assessment = (
+      session.query(CognitiveAssessmentModel.recorded_at)
+      .order_by(CognitiveAssessmentModel.recorded_at.desc())
+      .first()
+    )
+    interaction_count = session.query(PetInteractionModel).count()
+    last_interaction = (
+      session.query(PetInteractionModel.recorded_at)
+      .order_by(PetInteractionModel.recorded_at.desc())
+      .first()
+    )
+
+  def serialize(ts):
+    return ts[0].isoformat() if ts and ts[0] else None
+
+  return {
+    "database": {
+      "connected": True,
+      "samples_total": sample_count,
+      "last_sample_at": serialize(last_sample),
+    },
+    "assessments": {
+      "total": assessment_count,
+      "last_recorded_at": serialize(last_assessment),
+    },
+    "interactions": {
+      "total": interaction_count,
+      "last_recorded_at": serialize(last_interaction),
+    },
+  }

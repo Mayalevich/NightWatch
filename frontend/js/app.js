@@ -24,6 +24,8 @@ class NightWatchApp {
     this.currentCognitiveData = null;
     this.refreshInterval = null;
     this.historyData = [];
+    this.alertState = { sleep: 'unknown' };
+    this.cacheHydrated = false;
     this.csvHeader = [
       'time_s',
       'RMS_H',
@@ -53,6 +55,7 @@ class NightWatchApp {
   async init() {
     this.setupEventListeners();
     this.charts.init();
+    this.loadCachedHistory();
     this.setupWebSocket();
     await this.loadInitialData();
     this.startAutoRefresh();
@@ -122,6 +125,7 @@ class NightWatchApp {
       this.currentSleepData = msg.payload;
       this.sleepPanel.update(msg.payload);
       this.overviewPanel.updateSleep(msg.payload);
+      this.handleSleepAlert(Number(msg.payload.SleepScore));
       this.charts.addRMSPoint(msg.payload.RMS_H, msg.payload.RMS_B, msg.payload.RMS_L);
       this.charts.addAuxPoint(msg.payload.TempC, msg.payload.LightRaw, msg.payload.SoundRMS);
       this.addHistoryRow(msg.payload);
@@ -179,6 +183,11 @@ class NightWatchApp {
    */
   async loadInitialData() {
     try {
+      if (this.cacheHydrated) {
+        this.charts.reset();
+        this.sleepPanel.reset();
+        this.overviewPanel.reset();
+      }
       // Load sleep history
       const history = await this.api.getHistory();
       this.historyData = Array.isArray(history) ? history.map(row => ({ ...row })) : [];
@@ -190,9 +199,12 @@ class NightWatchApp {
           if (idx === history.length - 1) {
             this.currentSleepData = payload;
             this.overviewPanel.updateSleep(payload);
+            this.handleSleepAlert(Number(payload.SleepScore));
           }
         });
+        this.saveHistoryToCache();
       }
+      this.cacheHydrated = false;
 
       // Load cognitive data
       await this.loadCognitiveData();
@@ -270,6 +282,7 @@ class NightWatchApp {
       this.currentSleepData = null;
       this.currentCognitiveData = null;
       this.historyData = [];
+      this.clearHistoryCache();
       
       const logEl = document.getElementById('log');
       if (logEl) {
@@ -352,6 +365,7 @@ class NightWatchApp {
     if (this.historyData.length > maxRows) {
       this.historyData.splice(0, this.historyData.length - maxRows);
     }
+    this.saveHistoryToCache();
   }
 
   /**
@@ -388,6 +402,63 @@ class NightWatchApp {
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
     this.notifications.success('Sleep history exported.', 2500);
+  }
+
+  loadCachedHistory() {
+    try {
+      const cached = localStorage.getItem('sleepHistory');
+      if (!cached) return;
+      const parsed = JSON.parse(cached);
+      if (!Array.isArray(parsed) || !parsed.length) return;
+      this.historyData = parsed;
+      parsed.forEach((payload, idx) => {
+        this.sleepPanel.update(payload);
+        this.charts.addRMSPoint(payload.RMS_H, payload.RMS_B, payload.RMS_L);
+        this.charts.addAuxPoint(payload.TempC, payload.LightRaw, payload.SoundRMS);
+        if (idx === parsed.length - 1) {
+          this.currentSleepData = payload;
+          this.overviewPanel.updateSleep(payload);
+          this.handleSleepAlert(Number(payload.SleepScore));
+        }
+      });
+      this.cacheHydrated = true;
+      this.notifications.info('Loaded cached session snapshot.', 2000);
+    } catch (error) {
+      console.warn('Failed to load cached history', error);
+    }
+  }
+
+  saveHistoryToCache() {
+    try {
+      localStorage.setItem('sleepHistory', JSON.stringify(this.historyData));
+    } catch (error) {
+      console.warn('Unable to persist history cache', error);
+    }
+  }
+
+  clearHistoryCache() {
+    try {
+      localStorage.removeItem('sleepHistory');
+    } catch (error) {
+      console.warn('Unable to clear history cache', error);
+    }
+  }
+
+  handleSleepAlert(score) {
+    if (isNaN(score)) return;
+    const thresholds = CONFIG.ALERT_THRESHOLDS || { WARNING: 70, CRITICAL: 50 };
+    let bucket = 'ok';
+    if (score <= thresholds.CRITICAL) bucket = 'critical';
+    else if (score <= thresholds.WARNING) bucket = 'warning';
+    if (bucket === this.alertState.sleep) return;
+    this.alertState.sleep = bucket;
+    if (bucket === 'critical') {
+      this.notifications.error('Sleep score critically low — intervene now.', 4000);
+    } else if (bucket === 'warning') {
+      this.notifications.warning('Sleep quality trending down.', 3000);
+    } else {
+      this.notifications.success('Sleep score stabilised.', 2000);
+    }
   }
 }
 

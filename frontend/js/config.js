@@ -9,6 +9,8 @@ export const CONFIG = {
     HISTORY: '/api/history',
     LATEST: '/api/latest',
     STATUS: '/api/status',
+    SUMMARY: '/api/summary',
+    SYSTEM_STATUS: '/api/system-status',
     RESET: '/api/reset',
     ASSESSMENTS: '/api/assessments',
     INTERACTIONS: '/api/interactions',
@@ -58,5 +60,11 @@ export const CONFIG = {
     GOOD: 7,
     FAIR: 4,
   },
+
+  ALERT_THRESHOLDS: {
+    WARNING: 70,
+    CRITICAL: 50,
+  },
+
 };
 

@@ -33,6 +33,33 @@ if [ -f "backend/sleep_data.db" ]; then
     
     echo "  Assessments: $ASSESSMENTS"
     echo "  Interactions: $INTERACTIONS"
+
+    CLOCK_STATUS=$(cd backend && python3 - <<'PY'
+import sqlite3, time, datetime
+conn = sqlite3.connect('sleep_data.db')
+cur = conn.cursor()
+cur.execute('SELECT device_timestamp_ms FROM cognitive_assessments ORDER BY recorded_at DESC LIMIT 1')
+row = cur.fetchone()
+conn.close()
+
+if not row or row[0] is None:
+    print("  Clock Sync: No assessments yet")
+else:
+    ts = int(row[0])
+    if ts > 1_000_000_000:  # looks like epoch seconds
+        now = time.time()
+        delta = abs(now - ts)
+        human = datetime.datetime.fromtimestamp(ts).strftime('%Y-%m-%d %H:%M:%S')
+        if delta < 600:
+            print(f"  Clock Sync: ✓ Wi-Fi/NTP (last {human}, Δ{delta:.0f}s)")
+        else:
+            print(f"  Clock Sync: ! Stale epoch ({human}, Δ{delta:.0f}s)")
+    else:
+        minutes = ts / 60000 if ts else 0
+        print(f"  Clock Sync: ✗ Using uptime counter ({ts} ms ≈ {minutes:.1f} min)")
+PY
+)
+    echo "$CLOCK_STATUS"
 else
     echo "✗ Database: Not found"
 fi

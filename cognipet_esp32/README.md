@@ -97,6 +97,25 @@ On first power-on, the device runs a cognitive assessment:
 - **3 quick flashes:** Correct answer (green pattern)
 - **1 long flash:** Incorrect answer (red pattern)
 
+## Optional Wi‑Fi & Real-Time Orientation
+
+If you want the orientation questions to reference the actual day/time in Waterloo (instead of the built-in demo schedule), configure Wi‑Fi credentials so the ESP32 can briefly sync via NTP:
+
+1. Open `cognipet_esp32/cognipet_esp32.ino`.
+2. Near the top, set:
+   ```cpp
+   const char* WIFI_SSID = "YourHospitalWiFi";
+   const char* WIFI_PASSWORD = "super-secret";
+   ```
+3. Re-flash the firmware.
+
+On boot the device will:
+- Connect to Wi‑Fi (15 s timeout).
+- Sync time via `ca.pool.ntp.org` / `time.nist.gov` using the `EST5EDT` timezone rule (Waterloo).
+- Disconnect to save power.
+
+If Wi‑Fi is not configured (or fails to connect) the firmware automatically falls back to the fixed demo prompts, so assessments still work offline.
+
 ## BLE Data Transmission
 
 The device broadcasts assessment and interaction data via Bluetooth Low Energy:
@@ -119,7 +138,7 @@ The device broadcasts assessment and interaction data via Bluetooth Low Energy:
 ### AssessmentResult (32 bytes)
 ```cpp
 struct AssessmentResult {
-  uint32_t timestamp;        // milliseconds since boot
+  uint32_t timestamp;        // Unix time if Wi‑Fi synced, otherwise ms since boot
   uint8_t orientation_score; // 0-3
   uint8_t memory_score;      // 0-3
   uint8_t attention_score;   // 0-3
@@ -172,10 +191,7 @@ Open Serial Monitor at 115200 baud to see:
 
 ## Integration with Backend
 
-The backend server (in `../backend/`) can receive BLE data via:
-1. ESP32 BLE gateway (separate ESP32 device)
-2. Smartphone app bridge
-3. Direct WiFi connection (future enhancement)
+The backend server (in `../backend/`) receives data via BLE (bridge script). Wi‑Fi is currently used only for clock synchronization.
 
 See backend API endpoints in `server.py` for receiving assessment and interaction data.
 

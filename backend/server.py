@@ -176,6 +176,7 @@ service = BackendService(SERIAL_PORT)
 BASE_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = BASE_DIR.parent
 DASHBOARD_PATH = PROJECT_ROOT / "frontend" / "index.html"
+PATIENTS_PATH = PROJECT_ROOT / "frontend" / "patients.html"
 FRONTEND_STATIC = PROJECT_ROOT / "frontend"
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
@@ -242,6 +243,11 @@ async def stream(websocket: WebSocket) -> None:
 @app.get("/")
 async def index() -> FileResponse:
   return FileResponse(DASHBOARD_PATH)
+
+
+@app.get("/patients")
+async def patients_portal() -> FileResponse:
+  return FileResponse(PATIENTS_PATH)
 
 
 @app.get("/api/history")
@@ -339,31 +345,40 @@ def _score_hint(score: float) -> str:
   return "High movement detected"
 
 
-@app.get("/reports", response_class=HTMLResponse)
-async def reports(request: Request, minutes: int = 180) -> HTMLResponse:
-  window_minutes = max(30, min(minutes, 1440))
-  rows = await asyncio.to_thread(database.get_samples_since, window_minutes)
+def _clamp_minutes(value: int) -> int:
+  return max(30, min(value, 1440))
 
+
+def _compute_summary(rows: List[Dict], window_minutes: int) -> Dict:
   if not rows:
-    context = {
-      "request": request,
+    return {
       "window_minutes": window_minutes,
+      "sample_count": 0,
       "avg_score": "–",
+      "avg_score_numeric": None,
       "score_hint": "No data recorded yet",
       "events_total": "–",
       "events_head": "–",
       "events_body": "–",
       "events_leg": "–",
+      "events_total_numeric": None,
       "temp_avg": "–",
+      "temp_avg_numeric": None,
       "light_avg": "–",
+      "light_avg_numeric": None,
       "sound_avg": "–",
-      "sample_count": 0,
+      "sound_avg_numeric": None,
       "notes": ["Connect a device to start capturing data."],
-      "plot_movement": "<div style='padding:40px; text-align:center; color:#64748b;'>No samples available</div>",
-      "plot_heatmap": "<div style='padding:40px; text-align:center; color:#64748b;'>No samples available</div>",
-      "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
+      "times": [],
+      "rms_head": [],
+      "rms_body": [],
+      "rms_leg": [],
+      "temps": [],
+      "lights": [],
+      "sounds": [],
+      "scores": [],
+      "last_sample_at": None,
     }
-    return templates.TemplateResponse("report.html", context)
 
   times: List[datetime] = []
   rms_head: List[float] = []
@@ -393,53 +408,6 @@ async def reports(request: Request, minutes: int = 180) -> HTMLResponse:
     events_min_leg.append(int(payload.get("minute_events_L", 0)))
     total_events_min.append(int(payload.get("total_events_min", 0)))
 
-  fig = make_subplots(
-    rows=2,
-    cols=1,
-    shared_xaxes=True,
-    vertical_spacing=0.12,
-    subplot_titles=("Regional Movement (RMS)", "Environment (Temp / Light / Sound)"),
-  )
-
-  fig.add_trace(go.Scatter(x=times, y=rms_head, name="Head RMS", line=dict(color="#4338ca", width=2)), row=1, col=1)
-  fig.add_trace(go.Scatter(x=times, y=rms_body, name="Body RMS", line=dict(color="#14b8a6", width=2)), row=1, col=1)
-  fig.add_trace(go.Scatter(x=times, y=rms_leg, name="Leg RMS", line=dict(color="#f97316", width=2)), row=1, col=1)
-
-  fig.add_trace(go.Scatter(x=times, y=temps, name="Temp °C", line=dict(color="#0ea5e9", width=2)), row=2, col=1)
-  fig.add_trace(go.Scatter(x=times, y=lights, name="Light", line=dict(color="#facc15", width=1.6, dash="dot")), row=2, col=1)
-  fig.add_trace(go.Scatter(x=times, y=sounds, name="Sound RMS", line=dict(color="#22d3ee", width=1.8, dash="dash")), row=2, col=1)
-
-  fig.update_layout(
-    margin=dict(l=50, r=20, t=60, b=40),
-    legend=dict(orientation="h", y=1.15, x=0),
-    plot_bgcolor="#ffffff",
-    paper_bgcolor="#ffffff",
-    font=dict(family="Inter, sans-serif", size=13),
-  )
-  fig.update_xaxes(showgrid=True, gridcolor="#e2e8f0")
-  fig.update_yaxes(showgrid=True, gridcolor="#e2e8f0")
-
-  plot_movement = pio.to_html(fig, include_plotlyjs="cdn", full_html=False, config={"displayModeBar": False})
-
-  heatmap = go.Figure(
-    data=go.Heatmap(
-      z=[scores],
-      x=[t.strftime("%H:%M") for t in times],
-      y=["Sleep Score"],
-      colorscale="Blues",
-      zmin=0,
-      zmax=100,
-      hovertemplate="Time %{x}<br>Score %{z:.1f}<extra></extra>",
-    )
-  )
-  heatmap.update_layout(
-    margin=dict(l=40, r=20, t=20, b=40),
-    plot_bgcolor="#ffffff",
-    paper_bgcolor="#ffffff",
-    font=dict(family="Inter, sans-serif", size=13),
-  )
-  plot_heatmap = pio.to_html(heatmap, include_plotlyjs=False, full_html=False, config={"displayModeBar": False})
-
   sample_count = len(rows)
   avg_score = sum(scores) / sample_count if sample_count else 0.0
   avg_events_total = sum(total_events_min) / sample_count if sample_count else 0.0
@@ -450,8 +418,7 @@ async def reports(request: Request, minutes: int = 180) -> HTMLResponse:
   avg_light = sum(lights) / sample_count if sample_count else 0.0
   avg_sound = sum(sounds) / sample_count if sample_count else 0.0
 
-  notes: List[str] = []
-  notes.append(_score_hint(avg_score))
+  notes: List[str] = [_score_hint(avg_score)]
   if avg_events_total >= 10:
     notes.append("High overall activity")
   elif avg_events_total >= 5:
@@ -464,22 +431,153 @@ async def reports(request: Request, minutes: int = 180) -> HTMLResponse:
   elif avg_temp > 26:
     notes.append("Room trending warm")
 
-  context = {
-    "request": request,
+  return {
     "window_minutes": window_minutes,
+    "sample_count": sample_count,
     "avg_score": f"{avg_score:.1f}",
+    "avg_score_numeric": avg_score,
     "score_hint": _score_hint(avg_score),
     "events_total": f"{avg_events_total:.1f}",
     "events_head": f"{avg_events_head:.1f}",
     "events_body": f"{avg_events_body:.1f}",
     "events_leg": f"{avg_events_leg:.1f}",
+    "events_total_numeric": avg_events_total,
+    "events_head_numeric": avg_events_head,
+    "events_body_numeric": avg_events_body,
+    "events_leg_numeric": avg_events_leg,
     "temp_avg": f"{avg_temp:.1f}",
+    "temp_avg_numeric": avg_temp,
     "light_avg": f"{avg_light:.0f}",
+    "light_avg_numeric": avg_light,
     "sound_avg": f"{avg_sound:.1f}",
-    "sample_count": sample_count,
+    "sound_avg_numeric": avg_sound,
     "notes": notes,
+    "times": times,
+    "rms_head": rms_head,
+    "rms_body": rms_body,
+    "rms_leg": rms_leg,
+    "temps": temps,
+    "lights": lights,
+    "sounds": sounds,
+    "scores": scores,
+    "last_sample_at": rows[-1].get("recorded_at"),
+  }
+
+
+@app.get("/reports", response_class=HTMLResponse)
+async def reports(request: Request, minutes: int = 180) -> HTMLResponse:
+  window_minutes = _clamp_minutes(minutes)
+  rows = await asyncio.to_thread(database.get_samples_since, window_minutes)
+  metrics = _compute_summary(rows, window_minutes)
+
+  if metrics["sample_count"]:
+    fig = make_subplots(
+      rows=2,
+      cols=1,
+      shared_xaxes=True,
+      vertical_spacing=0.12,
+      subplot_titles=("Regional Movement (RMS)", "Environment (Temp / Light / Sound)"),
+    )
+
+    fig.add_trace(go.Scatter(x=metrics["times"], y=metrics["rms_head"], name="Head RMS", line=dict(color="#4338ca", width=2)), row=1, col=1)
+    fig.add_trace(go.Scatter(x=metrics["times"], y=metrics["rms_body"], name="Body RMS", line=dict(color="#14b8a6", width=2)), row=1, col=1)
+    fig.add_trace(go.Scatter(x=metrics["times"], y=metrics["rms_leg"], name="Leg RMS", line=dict(color="#f97316", width=2)), row=1, col=1)
+
+    fig.add_trace(go.Scatter(x=metrics["times"], y=metrics["temps"], name="Temp °C", line=dict(color="#0ea5e9", width=2)), row=2, col=1)
+    fig.add_trace(go.Scatter(x=metrics["times"], y=metrics["lights"], name="Light", line=dict(color="#facc15", width=1.6, dash="dot")), row=2, col=1)
+    fig.add_trace(go.Scatter(x=metrics["times"], y=metrics["sounds"], name="Sound RMS", line=dict(color="#22d3ee", width=1.8, dash="dash")), row=2, col=1)
+
+    fig.update_layout(
+      margin=dict(l=50, r=20, t=60, b=40),
+      legend=dict(orientation="h", y=1.15, x=0),
+      plot_bgcolor="#ffffff",
+      paper_bgcolor="#ffffff",
+      font=dict(family="Inter, sans-serif", size=13),
+    )
+    fig.update_xaxes(showgrid=True, gridcolor="#e2e8f0")
+    fig.update_yaxes(showgrid=True, gridcolor="#e2e8f0")
+
+    plot_movement = pio.to_html(fig, include_plotlyjs="cdn", full_html=False, config={"displayModeBar": False})
+
+    heatmap = go.Figure(
+      data=go.Heatmap(
+        z=[metrics["scores"]],
+        x=[t.strftime("%H:%M") for t in metrics["times"]],
+        y=["Sleep Score"],
+        colorscale="Blues",
+        zmin=0,
+        zmax=100,
+        hovertemplate="Time %{x}<br>Score %{z:.1f}<extra></extra>",
+      )
+    )
+    heatmap.update_layout(
+      margin=dict(l=40, r=20, t=20, b=40),
+      plot_bgcolor="#ffffff",
+      paper_bgcolor="#ffffff",
+      font=dict(family="Inter, sans-serif", size=13),
+    )
+    plot_heatmap = pio.to_html(heatmap, include_plotlyjs=False, full_html=False, config={"displayModeBar": False})
+  else:
+    empty = "<div style='padding:40px; text-align:center; color:#64748b;'>No samples in this window.</div>"
+    plot_movement = empty
+    plot_heatmap = empty
+
+  context = {
+    "request": request,
+    **{k: metrics[k] for k in [
+      "window_minutes",
+      "avg_score",
+      "score_hint",
+      "events_total",
+      "events_head",
+      "events_body",
+      "events_leg",
+      "temp_avg",
+      "light_avg",
+      "sound_avg",
+      "sample_count",
+      "notes",
+    ]},
     "plot_movement": plot_movement,
     "plot_heatmap": plot_heatmap,
     "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
   }
   return templates.TemplateResponse("report.html", context)
+
+
+@app.get("/api/summary")
+async def api_summary(minutes: int = 180) -> JSONResponse:
+  window_minutes = _clamp_minutes(minutes)
+  rows = await asyncio.to_thread(database.get_samples_since, window_minutes)
+  metrics = _compute_summary(rows, window_minutes)
+  payload = {
+    "window_minutes": window_minutes,
+    "sample_count": metrics["sample_count"],
+    "average_sleep_score": metrics.get("avg_score_numeric"),
+    "score_hint": metrics["score_hint"],
+    "movement_events_per_min": {
+      "total": metrics.get("events_total_numeric"),
+      "head": metrics.get("events_head_numeric"),
+      "body": metrics.get("events_body_numeric"),
+      "leg": metrics.get("events_leg_numeric"),
+    },
+    "environment": {
+      "temp_c": metrics.get("temp_avg_numeric"),
+      "light": metrics.get("light_avg_numeric"),
+      "sound_rms": metrics.get("sound_avg_numeric"),
+    },
+    "notes": metrics["notes"],
+    "last_sample_at": metrics["last_sample_at"],
+  }
+  return JSONResponse(payload)
+
+
+@app.get("/api/system-status")
+async def api_system_status() -> JSONResponse:
+  stats = await asyncio.to_thread(database.get_system_stats)
+  payload = {
+    "status": "healthy" if stats.get("database", {}).get("connected") else "degraded",
+    "timestamp": datetime.now(timezone.utc).isoformat(),
+    **stats,
+  }
+  return JSONResponse(payload)

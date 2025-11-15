@@ -7,7 +7,8 @@ A comprehensive IoT healthcare monitoring system that combines **real-time sleep
 NightWatch is an integrated system with **two complementary components** that work together to detect delirium:
 
 1. **Sleep Monitoring** (Arduino UNO R4): Tracks sleep patterns, movement, and environmental factors
-2. **Cognitive Assessment** (ESP32-S3 CogniPet): Performs cognitive tests and tracks cognitive function over time
+2. **Cognitive Assessment** (ESP32-S3 CogniPet): Performs cognitive tests and tracks cognitive function over time (now supports real-world orientation prompts via Wi‑Fi/NTP)
+3. **Patient Navigator (demo site)**: Switch between example patient profiles at `http://localhost:8000/patients` for demos without moving the physical hardware
 
 **Together**, these components provide early warning signs of delirium by monitoring both:
 - **Sleep disturbances** (disrupted sleep patterns are a key indicator)
@@ -99,18 +100,21 @@ The server will be available at `http://localhost:8000/`
 
 ### Usage
 
-- **Live Dashboard**: Navigate to `http://localhost:8000/`
-  - **Overview tab**: Quick status for clinicians/nurses
-  - **Detailed Dashboard tab**: Full metrics, charts, and event logs
-  - **Clear Data button**: Reset session and recalibrate
+- **Live Dashboard**: `http://localhost:8000/`
+  - **Overview tab**: Clinician-friendly snapshot
+  - **Detailed dashboard**: Charts, event log, CSV export, session reset
 
-- **Analytics Reports**: Visit `http://localhost:8000/reports` for historical analysis
-  - Interactive Plotly charts showing trends
-  - Summary statistics and environmental data
+- **Analytics Reports**: `http://localhost:8000/reports`
+  - Plotly-based trends for movement, environment, and sleep scores
+  - Auto-generated notes for quick interpretation
+
+- **Patient Navigator (demo)**: `http://localhost:8000/patients`
+  - Switch between example patients for trainings or demos while the physical device remains on one bed
 
 ### API Endpoints
 
 - `GET /` - Live dashboard
+- `GET /patients` - Patient navigator (demo)
 - `GET /reports` - Analytics report
 - `WebSocket /stream` - Real-time data stream
 - `GET /api/status` - Backend status
@@ -143,7 +147,9 @@ Portable cognitive assessment device that performs regular cognitive tests to tr
 ### Features
 
 - **Cognitive Assessment Tests**: Orientation, memory, attention, executive function
-- **Virtual Pet Interface**: Engaging patient interaction to encourage regular cognitive engagement
+- **Real-world Orientation Prompts**: When Wi‑Fi credentials are provided the device syncs its clock (Eastern/Waterloo timezone) so “What day/time is it?” questions use the actual current day and time-of-day; without Wi‑Fi it automatically falls back to the demo prompts
+- **On-device Diagnostics Mode**: Hidden bedside dashboard (Wi‑Fi/NTP status, BLE queue depth, button tester, pet vitals) activated via button combo for quick troubleshooting
+- **Virtual Pet Interface**: Engaging patient interaction to encourage regular check-ins
 - **BLE Data Transmission**: Automatic upload of assessment and interaction data
 - **Real-time Monitoring**: Track cognitive function over time
 - **Alert System**: Color-coded risk levels (Green/Yellow/Orange/Red)
@@ -166,6 +172,18 @@ See `cognipet_esp32/README.md` for detailed hardware setup.
 3. Select board: **ESP32S3 Dev Module**
 4. Upload to your ESP32-S3
 
+#### (Optional) Enable Wi‑Fi Time Sync
+
+If you want the orientation questions to reference the real local date/time (Waterloo timezone), set the Wi‑Fi credentials near the top of `cognipet_esp32/cognipet_esp32.ino` before flashing:
+
+```cpp
+const char* WIFI_SSID = "YourHospitalWiFi";
+const char* WIFI_PASSWORD = "super-secret";
+```
+
+On boot the device will briefly connect, synchronize against Canadian NTP servers, and then disconnect to save power. If the credentials remain as `YOUR_WIFI` / `YOUR_PASSWORD` (or Wi‑Fi is unavailable) the firmware automatically falls back to the original demo-oriented prompts.  
+**Important:** the ESP32-S3 only supports **2.4 GHz** Wi‑Fi. Ensure your hotspot/router is broadcasting 2.4 GHz or mixed mode; pure 5 GHz SSIDs (e.g., “5G” hotspots) will always fail to connect.
+
 #### 2. Start BLE Bridge
 
 The backend server includes a BLE bridge that automatically connects to the device:
@@ -186,6 +204,7 @@ Or use the restart script:
 
 - **Button 1 + Button 2** (hold 2 sec): Trigger cognitive assessment
 - **Button 1 + Button 3** (hold 2 sec): Send test assessment data
+- **Button 2 + Button 3** (hold 2 sec): Enter diagnostics mode (View Wi‑Fi/BLE status, button tester, pet vitals; hold Button 3 for ~1.5 s to exit)
 
 #### Pet Interactions
 

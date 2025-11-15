@@ -92,6 +92,7 @@ Or open in your browser: http://localhost:8000/status
 1. Connect your ESP32-S3 to power (USB or battery)
 2. Wait for it to boot (you should see the LCD display)
 3. The device will start advertising as "CogniPet" via Bluetooth
+4. *(Optional)* If you configured Wi‑Fi credentials in the firmware, the device will briefly connect and sync its clock to Waterloo time before advertising
 
 **Note:** Make sure the device is within Bluetooth range (typically 10-30 meters).
 

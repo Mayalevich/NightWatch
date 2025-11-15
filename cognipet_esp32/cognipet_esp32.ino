@@ -34,6 +34,8 @@
 #include <BLEUtils.h>
 #include <BLE2902.h>
 #include <Preferences.h>
+#include <WiFi.h>
+#include <time.h>
 
 // ==== Pin Definitions ====
 // ESP32-S3 I2C pins - try these common configurations:
@@ -57,6 +59,29 @@
 #define ASSESSMENT_UUID     "beb5483e-36e1-4688-b7f5-ea07361b26a8"
 #define INTERACTION_UUID    "1c95d5e3-d8f7-413a-bf3d-7a2e5d7be87e"
 
+#define WIFI_CONNECT_TIMEOUT_MS 15000
+#define TIME_RESYNC_INTERVAL_MS (6UL * 60UL * 60UL * 1000UL)  // every 6 hours
+#define TIME_CHECK_INTERVAL_MS 60000
+
+const char* WIFI_SSID = "Huawei mate60 5G";
+const char* WIFI_PASSWORD = "123456789";
+const char* TZ_INFO = "EST5EDT,M3.2.0,M11.1.0";
+const char* NTP_PRIMARY = "ca.pool.ntp.org";
+const char* NTP_SECONDARY = "pool.ntp.org";
+const char* NTP_TERTIARY = "time.nist.gov";
+
+bool wifiConnectedFlag = false;
+bool timeSynced = false;
+unsigned long lastTimeSyncAttempt = 0;
+unsigned long lastTimeMaintenance = 0;
+bool wifiEverConnected = false;
+unsigned long lastWifiSuccessMs = 0;
+unsigned long lastNtpSyncMs = 0;
+char lastWifiIp[20] = "--";
+
+const char* DAY_SHORT[7] = {"Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"};
+const char* PERIOD_SHORT[3] = {"AM", "PM", "EVE"};
+
 // ==== Device States ====
 enum DeviceState {
   STATE_FIRST_BOOT,
@@ -65,7 +90,8 @@ enum DeviceState {
   STATE_PET_MENU,
   STATE_PET_STATS,
   STATE_PET_MOOD,
-  STATE_PET_GAME
+  STATE_PET_GAME,
+  STATE_DIAGNOSTICS
 };
 
 enum PetMenu {
@@ -171,6 +197,172 @@ uint8_t lastR = 255, lastG = 255, lastB = 255; // Track last color to avoid unne
 PetMenu currentMenu = MENU_MAIN;
 uint8_t menuSelection = 0;
 unsigned long lastMenuChange = 0;
+uint8_t diagnosticsPage = 0;
+unsigned long lastDiagnosticsRefresh = 0;
+bool diagnosticsActive = false;
+const uint8_t DIAGNOSTIC_PAGE_COUNT = 4;
+
+// ==== Timekeeping Helpers ====
+bool hasWiFiCredentials() {
+  return strlen(WIFI_SSID) > 0 &&
+         strcmp(WIFI_SSID, "YOUR_WIFI") != 0 &&
+         strlen(WIFI_PASSWORD) > 0 &&
+         strcmp(WIFI_PASSWORD, "YOUR_PASSWORD") != 0;
+}
+
+bool connectToWiFi() {
+  if (!hasWiFiCredentials()) {
+    Serial.println("WiFi credentials not configured; skipping real-time sync.");
+    return false;
+  }
+
+  if (WiFi.status() == WL_CONNECTED) {
+    wifiConnectedFlag = true;
+    return true;
+  }
+
+  Serial.print("Connecting to WiFi");
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  unsigned long start = millis();
+  while (WiFi.status() != WL_CONNECTED && millis() - start < WIFI_CONNECT_TIMEOUT_MS) {
+    delay(300);
+    Serial.print(".");
+  }
+  Serial.println();
+
+  if (WiFi.status() == WL_CONNECTED) {
+    wifiConnectedFlag = true;
+    wifiEverConnected = true;
+    lastWifiSuccessMs = millis();
+    IPAddress ip = WiFi.localIP();
+    Serial.print("WiFi connected, IP: ");
+    Serial.println(ip);
+    snprintf(lastWifiIp, sizeof(lastWifiIp), "%u.%u.%u.%u", ip[0], ip[1], ip[2], ip[3]);
+    return true;
+  }
+
+  wifiConnectedFlag = false;
+  snprintf(lastWifiIp, sizeof(lastWifiIp), "--");
+  Serial.println("WiFi connection failed.");
+  return false;
+}
+
+void shutdownWiFi() {
+  if (WiFi.getMode() != WIFI_OFF) {
+    WiFi.disconnect(true);
+    WiFi.mode(WIFI_OFF);
+  }
+  wifiConnectedFlag = false;
+}
+
+bool syncTimeFromNTP() {
+  lastTimeSyncAttempt = millis();
+  if (!connectToWiFi()) {
+    timeSynced = false;
+    return false;
+  }
+
+  Serial.println("Syncing time via NTP...");
+  configTzTime(TZ_INFO, NTP_PRIMARY, NTP_SECONDARY, NTP_TERTIARY);
+
+  struct tm timeinfo;
+  bool success = false;
+  for (int i = 0; i < 10; i++) {
+    if (getLocalTime(&timeinfo, 1000)) {
+      success = true;
+      break;
+    }
+    delay(250);
+  }
+
+  if (success) {
+    timeSynced = true;
+    lastNtpSyncMs = millis();
+    char buf[32];
+    strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M", &timeinfo);
+    Serial.print("Time sync OK: ");
+    Serial.println(buf);
+  } else {
+    Serial.println("Failed to obtain time from NTP.");
+    timeSynced = false;
+  }
+
+  shutdownWiFi();  // conserve power once time is fetched
+  return success;
+}
+
+void ensureTimeSync() {
+  if (!hasWiFiCredentials()) {
+    timeSynced = false;
+    return;
+  }
+
+  if (!timeSynced) {
+    syncTimeFromNTP();
+    return;
+  }
+
+  if (millis() - lastTimeSyncAttempt > TIME_RESYNC_INTERVAL_MS) {
+    syncTimeFromNTP();
+  }
+}
+
+bool getLocalTimeSafe(struct tm* info) {
+  if (!timeSynced) {
+    ensureTimeSync();
+    if (!timeSynced) {
+      return false;
+    }
+  }
+
+  if (!getLocalTime(info, 1000)) {
+    Serial.println("RTC read failed; will attempt to resync.");
+    timeSynced = false;
+    return false;
+  }
+
+  return true;
+}
+
+uint32_t getCurrentTimestamp() {
+  if (timeSynced) {
+    time_t now = time(nullptr);
+    if (now > 0) {
+      return static_cast<uint32_t>(now);
+    }
+  }
+  return millis();
+}
+
+void maintainTimeService() {
+  if (!hasWiFiCredentials()) {
+    return;
+  }
+
+  if (millis() - lastTimeMaintenance > TIME_CHECK_INTERVAL_MS) {
+    ensureTimeSync();
+    lastTimeMaintenance = millis();
+  }
+}
+
+void initializeTimeService() {
+  if (!hasWiFiCredentials()) {
+    Serial.println("Skipping time sync (WiFi credentials not set).");
+    return;
+  }
+  syncTimeFromNTP();
+}
+
+void rotateOptions(uint8_t* arr, uint8_t shift) {
+  shift %= 3;
+  while (shift--) {
+    uint8_t tmp = arr[0];
+    arr[0] = arr[1];
+    arr[1] = arr[2];
+    arr[2] = tmp;
+  }
+}
 
 // ==== LCD Functions ====
 void lcdCommand(uint8_t cmd) {
@@ -594,13 +786,44 @@ void logInteraction(uint8_t type, uint16_t responseTime, uint8_t success, int8_t
 // ==== Cognitive Assessment Tests ====
 uint8_t testOrientation() {
   uint8_t score = 0;
+  struct tm now;
+  if (!getLocalTimeSafe(&now)) {
+    Serial.println("Orientation test requires valid real-time clock. Prompting user to sync.");
+    lcdClear();
+    lcdSetCursor(0, 0);
+    lcdPrint("Sync clock first");
+    lcdSetCursor(0, 1);
+    lcdPrint("Hold BTN1+BTN2");
+    delay(2500);
+    return 0;
+  }
   
   // Question 1: Day of week
   lcdClear();
   lcdSetCursor(0, 0);
-  lcdPrint("What day?");
+  lcdPrint("Today is?");
   lcdSetCursor(0, 1);
-  lcdPrint("A:Mon B:Tue C:Wed");  // Exactly 16 chars
+
+  uint8_t dayOptions[3];
+  uint8_t correctDaySlot = 0;
+  uint8_t today = now.tm_wday % 7;
+  dayOptions[0] = today;
+  dayOptions[1] = (today + 6) % 7;
+  dayOptions[2] = (today + 1) % 7;
+  rotateOptions(dayOptions, now.tm_mday % 3);
+  for (uint8_t i = 0; i < 3; i++) {
+    if (dayOptions[i] == today) {
+      correctDaySlot = i;
+      break;
+    }
+  }
+
+  char dayLine[17];
+  snprintf(dayLine, sizeof(dayLine), "A:%-2sB:%-2sC:%-2s",
+           DAY_SHORT[dayOptions[0]],
+           DAY_SHORT[dayOptions[1]],
+           DAY_SHORT[dayOptions[2]]);
+  lcdPrint(dayLine);
   delay(1000);
   
   questionStartTime = millis();
@@ -627,8 +850,7 @@ uint8_t testOrientation() {
   totalResponseTime += responseTime;
   responseCount++;
   
-  // Check answer (simplified - in real use, check actual day)
-  if (selectedAnswer == 1) { // Assume Tuesday is correct for demo
+  if (selectedAnswer == correctDaySlot) {
     score++;
     ledCorrect();
     lcdClear();
@@ -646,9 +868,34 @@ uint8_t testOrientation() {
   // Question 2: Time of day
   lcdClear();
   lcdSetCursor(0, 0);
-  lcdPrint("What time?");
+  lcdPrint("Time of day?");
   lcdSetCursor(0, 1);
-  lcdPrint("A:AM B:PM C:Eve");  // Exactly 16 chars
+
+  uint8_t periodOptions[3] = {0, 1, 2};  // morning, afternoon, evening
+  uint8_t epochHour = now.tm_hour;
+  uint8_t correctPeriod = 0;
+  if (epochHour >= 5 && epochHour < 12) {
+    correctPeriod = 0; // morning
+  } else if (epochHour >= 12 && epochHour < 18) {
+    correctPeriod = 1; // afternoon
+  } else {
+    correctPeriod = 2; // evening/night
+  }
+  rotateOptions(periodOptions, now.tm_min % 3);
+  uint8_t correctPeriodSlot = 0;
+  for (uint8_t i = 0; i < 3; i++) {
+    if (periodOptions[i] == correctPeriod) {
+      correctPeriodSlot = i;
+      break;
+    }
+  }
+
+  char timeLine[17];
+  snprintf(timeLine, sizeof(timeLine), "A:%-3sB:%-3sC:%-3s",
+           PERIOD_SHORT[periodOptions[0]],
+           PERIOD_SHORT[periodOptions[1]],
+           PERIOD_SHORT[periodOptions[2]]);
+  lcdPrint(timeLine);
   delay(1000);
   
   questionStartTime = millis();
@@ -675,8 +922,7 @@ uint8_t testOrientation() {
   totalResponseTime += responseTime;
   responseCount++;
   
-  // Check answer (simplified)
-  if (selectedAnswer == 1) {
+  if (selectedAnswer == correctPeriodSlot) {
     score++;
     ledCorrect();
     lcdClear();
@@ -988,6 +1234,8 @@ void runCognitiveAssessment() {
   delay(2000);
   
   Serial.println("=== Starting Cognitive Assessment ===");
+
+  ensureTimeSync();
   
   // Reset assessment
   memset(&lastAssessment, 0, sizeof(AssessmentResult));
@@ -1014,7 +1262,7 @@ void runCognitiveAssessment() {
     lastAssessment.executive_score;
   
   lastAssessment.avg_response_time_ms = totalResponseTime / responseCount;
-  lastAssessment.timestamp = millis();
+  lastAssessment.timestamp = getCurrentTimestamp();
   
   // Determine alert level
   if (lastAssessment.total_score >= 10) {
@@ -1505,7 +1753,7 @@ void sendTestAssessmentData() {
     lastAssessment.attention_score +
     lastAssessment.executive_score;
   
-  lastAssessment.timestamp = millis();
+  lastAssessment.timestamp = getCurrentTimestamp();
   
   // Determine alert level
   if (lastAssessment.total_score >= 10) {
@@ -1589,6 +1837,143 @@ bool checkBackdoor() {
   }
   
   return false;
+}
+
+bool checkDiagnosticsBackdoor() {
+  static bool comboActive = false;
+  static unsigned long comboStart = 0;
+  static bool hintShown = false;
+
+  bool btn2 = (digitalRead(BTN2_PIN) == LOW);
+  bool btn3 = (digitalRead(BTN3_PIN) == LOW);
+
+  if (btn2 && btn3 && !comboActive) {
+    comboActive = true;
+    comboStart = millis();
+    hintShown = false;
+  } else if (btn2 && btn3 && comboActive) {
+    unsigned long elapsed = millis() - comboStart;
+    if (elapsed > 1000 && !hintShown) {
+      lcdClear();
+      lcdSetCursor(0, 0);
+      lcdPrint("Diagnostics...");
+      lcdSetCursor(0, 1);
+      lcdPrint("Hold 2 sec...");
+      hintShown = true;
+    }
+    if (elapsed > 2000) {
+      comboActive = false;
+      hintShown = false;
+      return true;
+    }
+  } else {
+    if (comboActive && hintShown) {
+      lcdClear();
+    }
+    comboActive = false;
+    hintShown = false;
+  }
+
+  return false;
+}
+
+void runDiagnosticsMode() {
+  updateButtons();
+  unsigned long now = millis();
+
+  if (buttonPressed(1)) {
+    diagnosticsPage = (diagnosticsPage + 1) % DIAGNOSTIC_PAGE_COUNT;
+    lastDiagnosticsRefresh = 0;
+  } else if (buttonPressed(2)) {
+    diagnosticsPage = (diagnosticsPage + DIAGNOSTIC_PAGE_COUNT - 1) % DIAGNOSTIC_PAGE_COUNT;
+    lastDiagnosticsRefresh = 0;
+  }
+
+  static bool exitHold = false;
+  static unsigned long exitStart = 0;
+  bool btn3 = (digitalRead(BTN3_PIN) == LOW);
+  if (btn3 && !exitHold) {
+    exitHold = true;
+    exitStart = now;
+  } else if (btn3 && exitHold) {
+    if (now - exitStart > 1500) {
+      exitHold = false;
+      diagnosticsActive = false;
+      lcdClear();
+      currentState = STATE_PET_NORMAL;
+      return;
+    }
+  } else if (!btn3) {
+    exitHold = false;
+  }
+
+  if (now - lastDiagnosticsRefresh < 400) {
+    return;
+  }
+  lastDiagnosticsRefresh = now;
+
+  lcdClear();
+  char line[17];
+
+  switch (diagnosticsPage) {
+    case 0: {
+      if (wifiConnectedFlag) {
+        snprintf(line, sizeof(line), "WiFi:ON %s", lastWifiIp);
+      } else if (wifiEverConnected) {
+        snprintf(line, sizeof(line), "WiFi:LAST %s", lastWifiIp);
+      } else {
+        snprintf(line, sizeof(line), "WiFi:OFF --");
+      }
+      lcdSetCursor(0, 0);
+      lcdPrintPadded(line, 16);
+
+      if (timeSynced && lastNtpSyncMs > 0) {
+        unsigned long mins = (now - lastNtpSyncMs) / 60000UL;
+        if (mins > 99) mins = 99;
+        snprintf(line, sizeof(line), "Sync:%2lum ago", mins);
+      } else if (hasWiFiCredentials()) {
+        snprintf(line, sizeof(line), "Sync:pending...");
+      } else {
+        snprintf(line, sizeof(line), "Sync:disabled ");
+      }
+      lcdSetCursor(0, 1);
+      lcdPrintPadded(line, 16);
+      break;
+    }
+    case 1: {
+      uint8_t queueCount = (queueTail + 20 - queueHead) % 20;
+      snprintf(line, sizeof(line), "BLE:%s Q:%02u", deviceConnected ? "LINK" : "SCAN", queueCount);
+      lcdSetCursor(0, 0);
+      lcdPrintPadded(line, 16);
+
+      snprintf(line, sizeof(line), "Alert:%d Score:%02d", lastAssessment.alert_level, lastAssessment.total_score);
+      lcdSetCursor(0, 1);
+      lcdPrintPadded(line, 16);
+      break;
+    }
+    case 2: {
+      bool b1 = (digitalRead(BTN1_PIN) == LOW);
+      bool b2 = (digitalRead(BTN2_PIN) == LOW);
+      bool b3 = (digitalRead(BTN3_PIN) == LOW);
+      snprintf(line, sizeof(line), "Btn1:%d Btn2:%d", b1, b2);
+      lcdSetCursor(0, 0);
+      lcdPrintPadded(line, 16);
+
+      snprintf(line, sizeof(line), "Btn3:%d hold exit", b3);
+      lcdSetCursor(0, 1);
+      lcdPrintPadded(line, 16);
+      break;
+    }
+    case 3: {
+      snprintf(line, sizeof(line), "Mood:%3d Hun:%3d", pet.happiness, pet.hunger);
+      lcdSetCursor(0, 0);
+      lcdPrintPadded(line, 16);
+      snprintf(line, sizeof(line), "Clean:%3d Risk:%d", pet.cleanliness, lastAssessment.alert_level);
+      lcdSetCursor(0, 1);
+      lcdPrintPadded(line, 16);
+      break;
+    }
+  }
 }
 
 void handlePetInput() {
@@ -1729,6 +2114,8 @@ void setup() {
   Serial.println("Initializing BLE...");
   setupBLE();
   Serial.println("BLE setup complete");
+
+  initializeTimeService();
   
   Serial.println("=== CogniPet initialized successfully ===");
   Serial.println("Ready for use!");
@@ -1738,6 +2125,7 @@ void setup() {
 
 // ==== Main Loop ====
 void loop() {
+  maintainTimeService();
   // Handle BLE connection
   if (!deviceConnected && oldDeviceConnected) {
     delay(500);
@@ -1765,6 +2153,14 @@ void loop() {
   if (checkTestDataBackdoor()) {
     sendTestAssessmentData();
   }
+
+  if (currentState != STATE_DIAGNOSTICS && checkDiagnosticsBackdoor()) {
+    diagnosticsActive = true;
+    diagnosticsPage = 0;
+    lastDiagnosticsRefresh = 0;
+    lcdClear();
+    currentState = STATE_DIAGNOSTICS;
+  }
   
   switch(currentState) {
     case STATE_ASSESSMENT:
@@ -1781,6 +2177,10 @@ void loop() {
         drawPetScreen();
       }
       delay(100);
+      break;
+
+    case STATE_DIAGNOSTICS:
+      runDiagnosticsMode();
       break;
       
     default:
